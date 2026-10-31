@@ -121,6 +121,11 @@ def cmd_dashboard(args):
     out_path = previewer.generate_html_dashboard(contacts, DEFAULT_STORAGE.preview_dashboard_path)
     console.print(f"[bold green]✓ Visual HTML Dashboard generated at:[/] file://{out_path.resolve()}")
 
+    if getattr(args, "open", False):
+        import webbrowser
+        console.print("[dim]Opening dashboard in default web browser...[/dim]")
+        webbrowser.open(f"file://{out_path.resolve()}")
+
 
 def cmd_draft(args):
     """Create personalized email drafts in Gmail for approved contacts."""
@@ -511,8 +516,9 @@ def main():
 
     # dashboard
     p_dash = subparsers.add_parser("dashboard", help="Generate HTML preview dashboard")
-    p_dash.add_argument("--limit", "-l", type=int, default=100, help="Number of contacts to include in dashboard")
+    p_dash.add_argument("--limit", "-l", type=int, default=0, help="Number of contacts to include in dashboard (0 = all)")
     p_dash.add_argument("--tier", "-t", type=int, choices=[1, 2, 3], help="Filter contacts by tier (1: MNC, 2: IT Services, 3: Staffing)")
+    p_dash.add_argument("--open", "-o", action="store_true", help="Automatically open dashboard in default web browser")
 
     # approve-all
     p_appr = subparsers.add_parser("approve-all", help="Batch approve all cleaned contacts")

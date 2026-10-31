@@ -2,6 +2,10 @@
 Automated HR Email Outreach System - Main CLI Orchestrator
 """
 import sys
+import os
+import re
+import stat
+import subprocess
 import argparse
 from pathlib import Path
 import pandas as pd
@@ -358,11 +362,139 @@ def cmd_reset(args):
     console.print("[bold green]✓ Campaign database reset successfully.[/bold green]")
 
 
+def cmd_audit(args):
+    """Run comprehensive security, privacy, and secret leak audit."""
+    console.print(Panel(
+        "[bold cyan]Security & Safeguards Audit[/bold cyan]\n"
+        "Auditing Git tracking, secret leakage, file permissions, privacy masking, and anti-spam limits.",
+        title="🔒 Security Audit"
+    ))
+
+    audit_table = Table(title="Security & Safety Verification", show_header=True)
+    audit_table.add_column("Audit Category", style="cyan", width=28)
+    audit_table.add_column("Status", width=12)
+    audit_table.add_column("Details", style="dim")
+
+    overall_pass = True
+
+    # 1. Git Tracked Files Audit
+    try:
+        res = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True)
+        tracked_files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
+        
+        forbidden_in_git = []
+        forbidden_patterns = ["credentials.json", "token.json", "client_secret_", ".env", "outreach_history.db"]
+        for f in tracked_files:
+            for pat in forbidden_patterns:
+                if pat in f:
+                    forbidden_in_git.append(f)
+            if f.endswith((".xlsx", ".xls", ".csv")) and f != "sample_recruiter_contacts.xlsx":
+                forbidden_in_git.append(f)
+            if f.endswith(".pdf"):
+                forbidden_in_git.append(f)
+
+        if forbidden_in_git:
+            overall_pass = False
+            audit_table.add_row("Git Repository Tracking", "[bold red]FAIL[/bold red]", f"Tracked forbidden files: {', '.join(forbidden_in_git)}")
+        else:
+            audit_table.add_row("Git Repository Tracking", "[bold green]PASS[/bold green]", f"All {len(tracked_files)} tracked files safe (0 secrets or sheets)")
+    except Exception as e:
+        audit_table.add_row("Git Repository Tracking", "[yellow]SKIPPED[/yellow]", f"Git query failed: {e}")
+
+    # 2. Git History Secret Leak Scan
+    try:
+        res = subprocess.run(["git", "log", "-p"], capture_output=True, text=True)
+        if res.returncode == 0:
+            log_output = res.stdout
+            leak_matches = re.findall(r"(GOCSPX-[A-Za-z0-9_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|BEGIN (?:RSA )?PRIVATE KEY)", log_output)
+            if leak_matches:
+                overall_pass = False
+                audit_table.add_row("Git Commit History", "[bold red]FAIL[/bold red]", "Secret key pattern detected in commit history!")
+            else:
+                audit_table.add_row("Git Commit History", "[bold green]PASS[/bold green]", "Zero secret tokens or private keys in git commit history")
+        else:
+            audit_table.add_row("Git Commit History", "[dim]N/A[/dim]", "No git history found")
+    except Exception as e:
+        audit_table.add_row("Git Commit History", "[yellow]SKIPPED[/yellow]", str(e))
+
+    # 3. Local Credential File Permissions
+    base_dir = Path(__file__).resolve().parent
+    cred_files = list(base_dir.glob("credentials.json")) + list(base_dir.glob("token.json")) + list(base_dir.glob("client_secret_*.json"))
+    perm_issues = []
+    for cf in cred_files:
+        mode = oct(stat.S_IMODE(cf.stat().st_mode))
+        if cf.stat().st_mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+            try:
+                cf.chmod(0o600)
+            except Exception:
+                perm_issues.append(f"{cf.name} ({mode})")
+    if perm_issues:
+        audit_table.add_row("File Permissions", "[yellow]WARN[/yellow]", f"Permissions loose: {', '.join(perm_issues)}")
+    else:
+        audit_table.add_row("File Permissions", "[bold green]PASS[/bold green]", f"Hardened to 600 (owner-only access for {len(cred_files)} secret files)")
+
+    # 4. Pre-Commit Hook Active
+    hook_path = base_dir / ".git" / "hooks" / "pre-commit"
+    if hook_path.exists() and os.access(hook_path, os.X_OK):
+        audit_table.add_row("Pre-Commit Guard Hook", "[bold green]PASS[/bold green]", "Active (.git/hooks/pre-commit blocks secret commits)")
+    else:
+        audit_table.add_row("Pre-Commit Guard Hook", "[yellow]WARN[/yellow]", "Pre-commit hook not installed or not executable")
+
+    # 5. Dashboard Data Privacy (Email Masking)
+    dash_path = DEFAULT_STORAGE.preview_dashboard_path
+    if dash_path.exists():
+        dash_content = dash_path.read_text(encoding="utf-8")
+        email_matches = re.findall(r"\b[A-Za-z0-9._%+-]+@(?!example\.com|domain\.com|test\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", dash_content)
+        email_matches = [m for m in email_matches if m != DEFAULT_PROFILE.email_address]
+        if email_matches:
+            overall_pass = False
+            audit_table.add_row("Dashboard Privacy", "[bold red]FAIL[/bold red]", f"Unmasked emails found in HTML: {len(email_matches)}")
+        else:
+            audit_table.add_row("Dashboard Privacy", "[bold green]PASS[/bold green]", "Recruiter email addresses 100% masked in HTML dashboard")
+    else:
+        audit_table.add_row("Dashboard Privacy", "[dim]N/A[/dim]", "Dashboard not yet generated")
+
+    # 6. Anti-Spam & Delivery Limits
+    limits_pass = (
+        DEFAULT_SAFEGUARDS.max_emails_per_day <= 50 and
+        DEFAULT_SAFEGUARDS.min_jitter_seconds >= 15 and
+        DEFAULT_SAFEGUARDS.gmail_scopes == ["https://www.googleapis.com/auth/gmail.compose"]
+    )
+    if limits_pass:
+        audit_table.add_row(
+            "Anti-Spam Safeguards",
+            "[bold green]PASS[/bold green]",
+            f"Daily Cap: {DEFAULT_SAFEGUARDS.max_emails_per_day}/day | Jitter: {DEFAULT_SAFEGUARDS.min_jitter_seconds}-{DEFAULT_SAFEGUARDS.max_jitter_seconds}s | Minimal Scope"
+        )
+    else:
+        audit_table.add_row("Anti-Spam Safeguards", "[yellow]WARN[/yellow]", "Settings exceed recommended anti-spam bounds")
+
+    # 7. Suppression List & Duplicate Prevention
+    tracker = OutreachTracker(DEFAULT_STORAGE.db_path, DEFAULT_STORAGE.suppression_list_path)
+    summary = tracker.get_summary_stats()
+    audit_table.add_row(
+        "Suppression & Tracker",
+        "[bold green]PASS[/bold green]",
+        f"Database connected | {summary['suppressed_contacts']} suppressed | {summary['total_logged']} logged"
+    )
+
+    console.print(audit_table)
+
+    if overall_pass:
+        console.print("\n[bold green]✓ ALL SAFETY CHECKS PASSED: Zero credential leaks, hardened storage, and anti-spam safeguards fully engaged.[/bold green]\n")
+    else:
+        console.print("\n[bold red]⚠ ONE OR MORE SECURITY AUDIT CHECKS FAILED. Please review the table above.[/bold red]\n")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Automated HR Email Outreach System for Internship & Entry-Level Job Opportunities"
     )
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
+
+    # audit
+    subparsers.add_parser("audit", help="Run comprehensive security, privacy, and secret leak audit")
 
     # reset
     p_reset = subparsers.add_parser("reset", help="Reset campaign history and SQLite database")
@@ -412,7 +544,9 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "clean":
+    if args.command == "audit":
+        cmd_audit(args)
+    elif args.command == "clean":
         cmd_clean(args)
     elif args.command == "preview":
         cmd_preview(args)

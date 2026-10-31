@@ -57,17 +57,31 @@ jobs:
           echo "=== 7. Verifying campaign status report ==="
           python main.py status
 
+          echo "=== 8. Running Automated Security & Safety Audit ==="
+          python main.py audit
+
   security-check:
     name: Security & Credential Leak Audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Audit Repository for Leaked Secrets
+      - name: Audit Repository for Leaked Secrets & Spreadsheets
         run: |
-          echo "Checking repository for forbidden credential or token files..."
-          FORBIDDEN_FILES=("credentials.json" "token.json" "Untitled spreadsheet.xlsx")
+          echo "Checking repository for forbidden credential, token, or spreadsheet files..."
+          FORBIDDEN_FILES=(
+            "credentials.json"
+            "token.json"
+            "Untitled spreadsheet.xlsx"
+            "data/cleaned_contacts.xlsx"
+            "data/quarantined_records.xlsx"
+            "data/outreach_history.db"
+            "resume.pdf"
+            ".env"
+          )
           LEAK_FOUND=0
           for file in "${FORBIDDEN_FILES[@]}"; do
             if git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
@@ -77,7 +91,17 @@ jobs:
               echo "✓ $file is safely untracked/ignored."
             fi
           done
+
+          echo "Scanning all commit history for OAuth secrets, tokens, and private keys..."
+          if git log -p | grep -E "(GOCSPX-[A-Za-z0-9_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|BEGIN (?:RSA )?PRIVATE KEY|\"client_secret\":\s*\"[^\"]{15,}\")"; then
+            echo "❌ SECURITY ALERT: High-entropy secret key pattern found in git log!"
+            LEAK_FOUND=1
+          else
+            echo "✓ Git history is 100% clean of private keys and secrets."
+          fi
+
           if [ $LEAK_FOUND -ne 0 ]; then
+            echo "Security audit failed!"
             exit 1
           fi
-          echo "✓ All security checks passed. No secrets or recruiter sheets detected."
+          echo "✓ All automated leak detection checks passed cleanly."

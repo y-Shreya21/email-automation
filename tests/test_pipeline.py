@@ -90,17 +90,17 @@ class TestTemplateEngine(unittest.TestCase):
 
     def test_custom_template_rendering(self):
         contact = {
-            "first_name": "Reena",
-            "cleaned_name": "Reena Vijayanand",
-            "cleaned_company": "AdaniConneX",
+            "first_name": "Alex",
+            "cleaned_name": "Alex Rivera",
+            "cleaned_company": "Apex Technologies",
             "job_title": "Head of Talent Acquisition",
-            "email": "reena.v@adani.com"
+            "email": "alex.rivera@example.com"
         }
         res = self.engine.render(contact)
         body = res["text_body"]
 
-        self.assertIn("Hi Reena,", body)
-        self.assertIn("AdaniConneX", body)
+        self.assertIn("Hi Alex,", body)
+        self.assertIn("Apex Technologies", body)
         self.assertIn("B.Tech Computer Science Student", body)
         self.assertIn("Shreya Yadav", body)
         self.assertIn("+91 6006608059", body)
@@ -114,11 +114,11 @@ class TestTemplateEngine(unittest.TestCase):
         contact = {
             "first_name": "",
             "cleaned_name": "",
-            "cleaned_company": "Atlan",
-            "email": "hr@atlan.com"
+            "cleaned_company": "Nexus Systems",
+            "email": "hr@example.com"
         }
         res = self.engine.render(contact)
-        self.assertIn("Hi Atlan Team,", res["text_body"])
+        self.assertIn("Hi Nexus Systems Team,", res["text_body"])
 
 
 class TestOutreachTracker(unittest.TestCase):

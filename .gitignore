@@ -1,0 +1,44 @@
+# Python virtual environment
+venv/
+env/
+ENV/
+*.venv
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Sensitive Google Cloud & Gmail API credentials (DO NOT COMMIT)
+credentials.json
+client_secret_*.json
+token.json
+
+# Recruiter spreadsheets & candidate data (DO NOT COMMIT)
+*.xlsx
+*.xls
+*.csv
+!sample_recruiter_contacts.xlsx
+data/*.xlsx
+data/*.xls
+data/*.csv
+data/outreach_history.db
+data/outreach.log
+data/suppression_list.json
+resume.pdf
+*.pdf
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

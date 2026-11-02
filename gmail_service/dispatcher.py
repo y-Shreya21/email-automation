@@ -73,13 +73,15 @@ class EmailDispatcher:
         tracker: Any,
         min_jitter: int = 20,
         max_jitter: int = 45,
-        max_daily_limit: int = 50
+        max_daily_limit: int = 50,
+        verifier: Optional[Any] = None
     ):
         self.service = gmail_service
         self.tracker = tracker
         self.min_jitter = min_jitter
         self.max_jitter = max_jitter
         self.max_daily_limit = max_daily_limit
+        self.verifier = verifier
 
     def apply_jitter(self, action_name: str = "operation"):
         """Wait randomized interval to simulate natural human activity."""
@@ -106,6 +108,21 @@ class EmailDispatcher:
 
         if self.tracker.is_already_contacted(to_email):
             return (False, f"Skipped: {to_email} already contacted/drafted", None)
+
+        # Deliverability check
+        if self.verifier:
+            deliv = self.verifier.verify(to_email)
+            if not deliv.is_deliverable:
+                meta = contact_meta or {}
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    name=meta.get("cleaned_name", ""),
+                    company=meta.get("cleaned_company", ""),
+                    job_title=meta.get("job_title", ""),
+                    status="UNDELIVERABLE",
+                    error_message=deliv.reason
+                )
+                return (False, f"Skipped (Undeliverable): {deliv.reason}", None)
 
         try:
             mime_msg = build_mime_message(
@@ -168,6 +185,21 @@ class EmailDispatcher:
 
         if self.tracker.is_already_contacted(to_email):
             return (False, f"Skipped: {to_email} already contacted", None)
+
+        # Deliverability check
+        if self.verifier:
+            deliv = self.verifier.verify(to_email)
+            if not deliv.is_deliverable:
+                meta = contact_meta or {}
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    name=meta.get("cleaned_name", ""),
+                    company=meta.get("cleaned_company", ""),
+                    job_title=meta.get("job_title", ""),
+                    status="UNDELIVERABLE",
+                    error_message=deliv.reason
+                )
+                return (False, f"Skipped (Undeliverable): {deliv.reason}", None)
 
         try:
             mime_msg = build_mime_message(

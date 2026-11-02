@@ -17,6 +17,9 @@ from data_processor.cleaner import (
 )
 from templates.email_templates import TemplateEngine
 from storage.tracker import OutreachTracker
+from data_processor.verifier import EmailDeliverabilityVerifier
+from gmail_service.dispatcher import EmailDispatcher
+from gmail_service.auth import MockGmailService
 
 
 class TestDataCleaning(unittest.TestCase):
@@ -153,5 +156,92 @@ class TestOutreachTracker(unittest.TestCase):
         self.assertTrue(self.tracker.is_suppressed(email))
 
 
+class TestDeliverabilityVerifier(unittest.TestCase):
+    """Test email deliverability, syntax, burner detection, and MX verification."""
+
+    def setUp(self):
+        self.verifier = EmailDeliverabilityVerifier(dns_timeout=2.0, allow_offline_fallback=True)
+
+    def test_syntax_checks(self):
+        valid, _ = self.verifier.validate_syntax("recruiter@example.com")
+        self.assertTrue(valid)
+
+        invalid_cases = [
+            "missing-at-domain.com",
+            "@domain.com",
+            "user@",
+            "user@nodot",
+            "",
+            None
+        ]
+        for bad in invalid_cases:
+            valid, _ = self.verifier.validate_syntax(bad)
+            self.assertFalse(valid, f"Should fail for {bad}")
+
+    def test_disposable_domain_detection(self):
+        res = self.verifier.verify("applicant@mailinator.com")
+        self.assertFalse(res.is_deliverable)
+        self.assertEqual(res.status, "UNDELIVERABLE")
+        self.assertIn("disposable/burner", res.reason)
+
+        res2 = self.verifier.verify("lead@tempmail.com")
+        self.assertFalse(res2.is_deliverable)
+        self.assertEqual(res2.status, "UNDELIVERABLE")
+
+    def test_nonexistent_domain(self):
+        from unittest.mock import patch
+        import dns.resolver
+
+        with patch.object(self.verifier.resolver, "resolve", side_effect=dns.resolver.NXDOMAIN()):
+            res = self.verifier.verify("recruiter@fake-company-does-not-exist.com")
+            self.assertFalse(res.is_deliverable)
+            self.assertEqual(res.status, "UNDELIVERABLE")
+            self.assertIn("does not exist", res.reason)
+
+    def test_domain_caching(self):
+        domain = "mailinator.com"
+        self.verifier.check_domain_mx(domain)
+        self.assertIn(domain, self.verifier._domain_cache)
+
+    def test_dispatcher_skips_undeliverable(self):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp_dir) / "test_tracker.db"
+            supp_path = Path(tmp_dir) / "test_supp.json"
+            tracker = OutreachTracker(db_path, supp_path)
+            mock_service = MockGmailService()
+
+            dispatcher = EmailDispatcher(
+                gmail_service=mock_service,
+                tracker=tracker,
+                min_jitter=0,
+                max_jitter=0,
+                verifier=self.verifier
+            )
+
+            # Test undeliverable burner email
+            success, msg, draft_id = dispatcher.create_draft(
+                to_email="test@mailinator.com",
+                subject="Test Subject",
+                text_body="Hello",
+                html_body="<p>Hello</p>"
+            )
+
+            self.assertFalse(success)
+            self.assertIsNone(draft_id)
+            self.assertIn("Undeliverable", msg)
+
+            # Confirm status saved in tracker as UNDELIVERABLE
+            with tracker._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT status FROM outreach_log WHERE email = ?", ("test@mailinator.com",))
+                row = cursor.fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row["status"], "UNDELIVERABLE")
+        finally:
+            shutil.rmtree(tmp_dir)
+
+
 if __name__ == "__main__":
     unittest.main()
+

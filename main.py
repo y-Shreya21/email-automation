@@ -15,6 +15,7 @@ from rich.panel import Panel
 
 from config import DEFAULT_PROFILE, DEFAULT_SAFEGUARDS, DEFAULT_STORAGE
 from data_processor.cleaner import ContactDatasetCleaner
+from data_processor.verifier import EmailDeliverabilityVerifier
 from templates.email_templates import TemplateEngine
 from storage.tracker import OutreachTracker
 from ui.preview_system import PreviewApprovalSystem
@@ -163,11 +164,13 @@ def cmd_draft(args):
             console.print("  [bold green]python main.py draft --dry-run[/bold green]")
             return
 
+    verifier = EmailDeliverabilityVerifier()
     dispatcher = EmailDispatcher(
         service, tracker,
         min_jitter=0 if args.dry_run else 2,
         max_jitter=0 if args.dry_run else 4,
-        max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day
+        max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day,
+        verifier=verifier
     )
 
     resume_file = DEFAULT_PROFILE.resume_path if DEFAULT_PROFILE.resume_path.exists() else None
@@ -177,11 +180,14 @@ def cmd_draft(args):
         console.print("[yellow]Note: No resume.pdf found in project root. Drafts will be created without attachment.[/yellow]")
 
     success_count = 0
+    skipped_undeliverable = 0
+
     for idx, c in enumerate(targets, 1):
         email = c["email"]
+        company = c.get("company", "Company")
         rendered = engine.render(c, template_key=c.get("template_key"))
         
-        console.print(f"[{idx}/{len(targets)}] Creating draft for {email} ({c.get('company')})...")
+        console.print(f"[{idx}/{len(targets)}] Verifying deliverability & drafting for {email} ({company})...")
         success, msg, draft_id = dispatcher.create_draft(
             to_email=email,
             subject=rendered["subject"],
@@ -197,9 +203,16 @@ def cmd_draft(args):
             if not args.dry_run and idx < len(targets):
                 dispatcher.apply_jitter("draft")
         else:
-            console.print(f"  [red]✗ {msg}[/red]")
+            if "Undeliverable" in msg:
+                skipped_undeliverable += 1
+                console.print(f"  [bold yellow]⚠ {msg} -> Skipped, moving to next contact...[/bold yellow]")
+            else:
+                console.print(f"  [red]✗ {msg}[/red]")
 
-    console.print(f"\n[bold green]Draft Creation Finished: {success_count}/{len(targets)} drafts ready in Gmail.[/bold green]")
+    summary_msg = f"\n[bold green]Draft Creation Finished: {success_count}/{len(targets)} drafts ready in Gmail.[/bold green]"
+    if skipped_undeliverable > 0:
+        summary_msg += f" [yellow]({skipped_undeliverable} skipped due to non-deliverable email domains)[/yellow]"
+    console.print(summary_msg)
 
     # Automatically refresh the visual dashboard page
     try:
@@ -246,21 +259,26 @@ def cmd_send(args):
         )
         service = authenticator.get_service()
 
+    verifier = EmailDeliverabilityVerifier()
     dispatcher = EmailDispatcher(
         service, tracker,
         min_jitter=0 if args.dry_run else DEFAULT_SAFEGUARDS.min_jitter_seconds,
         max_jitter=0 if args.dry_run else DEFAULT_SAFEGUARDS.max_jitter_seconds,
-        max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day
+        max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day,
+        verifier=verifier
     )
 
     resume_file = DEFAULT_PROFILE.resume_path if DEFAULT_PROFILE.resume_path.exists() else None
 
     sent_count = 0
+    skipped_undeliverable = 0
+
     for idx, c in enumerate(targets, 1):
         email = c["email"]
+        company = c.get("company", "Company")
         rendered = engine.render(c, template_key=c.get("template_key"))
         
-        console.print(f"[{idx}/{len(targets)}] Sending individual email to {email}...")
+        console.print(f"[{idx}/{len(targets)}] Verifying deliverability & sending to {email} ({company})...")
         success, msg, msg_id = dispatcher.send_email(
             to_email=email,
             subject=rendered["subject"],
@@ -276,9 +294,16 @@ def cmd_send(args):
             if not args.dry_run and idx < len(targets):
                 dispatcher.apply_jitter("send")
         else:
-            console.print(f"  [red]✗ {msg}[/red]")
+            if "Undeliverable" in msg:
+                skipped_undeliverable += 1
+                console.print(f"  [bold yellow]⚠ {msg} -> Skipped, moving to next contact...[/bold yellow]")
+            else:
+                console.print(f"  [red]✗ {msg}[/red]")
 
-    console.print(f"\n[bold green]Outreach Dispatched: {sent_count}/{len(targets)} emails sent successfully.[/bold green]")
+    summary_send = f"\n[bold green]Outreach Dispatched: {sent_count}/{len(targets)} emails sent successfully.[/bold green]"
+    if skipped_undeliverable > 0:
+        summary_send += f" [yellow]({skipped_undeliverable} skipped due to non-deliverable email domains)[/yellow]"
+    console.print(summary_send)
 
     # Automatically refresh the visual dashboard page
     try:
@@ -353,6 +378,55 @@ def cmd_status(args):
         for status, count in stats["status_breakdown"].items():
             breakdown_table.add_row(status, str(count))
         console.print(breakdown_table)
+
+
+def cmd_verify_emails(args):
+    """Audit email deliverability & MX records for contacts."""
+    if not DEFAULT_STORAGE.cleaned_contacts_path.exists():
+        console.print("[red]Cleaned contacts file not found. Run 'python main.py clean' first.[/red]")
+        sys.exit(1)
+
+    df = pd.read_excel(DEFAULT_STORAGE.cleaned_contacts_path)
+    contacts = df.to_dict(orient="records")
+
+    if getattr(args, "tier", None):
+        contacts = [c for c in contacts if int(c.get("tier", 1)) == args.tier]
+        console.print(f"[bold cyan]Filtering deliverability audit by Tier {args.tier} ({len(contacts)} contacts)...[/]")
+
+    if args.limit and args.limit > 0:
+        contacts = contacts[:args.limit]
+
+    verifier = EmailDeliverabilityVerifier()
+    console.print(f"[bold cyan]Auditing MX deliverability for {len(contacts)} contacts...[/]")
+
+    table = Table(title="Email Deliverability & MX Verification", show_header=True)
+    table.add_column("Company", style="bold")
+    table.add_column("Recipient Name", style="cyan")
+    table.add_column("Domain", style="magenta")
+    table.add_column("Deliverability Status", justify="center")
+    table.add_column("MX Exchange / Reason", style="dim")
+
+    deliverable_count = 0
+    undeliverable_count = 0
+
+    for c in contacts:
+        email = str(c.get("email", "")).strip()
+        res = verifier.verify(email)
+        company = str(c.get("cleaned_company", "N/A"))
+        name = str(c.get("cleaned_name", "N/A"))
+
+        if res.is_deliverable:
+            deliverable_count += 1
+            mx_disp = ", ".join(res.mx_records[:1]) if res.mx_records else res.reason
+            table.add_row(company, name, res.domain, "[bold green]✓ DELIVERABLE[/bold green]", mx_disp)
+        else:
+            undeliverable_count += 1
+            table.add_row(company, name, res.domain, "[bold red]✗ UNDELIVERABLE[/bold red]", res.reason)
+
+    console.print(table)
+    console.print(f"\n[bold green]Summary: {deliverable_count}/{len(contacts)} contacts confirmed deliverable with active MX records.[/bold green]")
+    if undeliverable_count > 0:
+        console.print(f"[bold yellow]⚠ {undeliverable_count} contacts are undeliverable and will be automatically skipped during draft creation.[/bold yellow]")
 
 
 def cmd_reset(args):
@@ -540,6 +614,11 @@ def main():
     # status
     subparsers.add_parser("status", help="Show campaign metrics and tracking status")
 
+    # verify-emails
+    p_verify = subparsers.add_parser("verify-emails", help="Audit email deliverability & MX records for contacts")
+    p_verify.add_argument("--limit", "-l", type=int, default=20, help="Number of contacts to verify (0 = all)")
+    p_verify.add_argument("--tier", "-t", type=int, choices=[1, 2, 3], help="Filter contacts by tier (1: MNC, 2: IT Services, 3: Staffing)")
+
     # sample
     p_sample = subparsers.add_parser("sample", help="Generate a synthetic 2,000-contact sample spreadsheet")
     p_sample.add_argument("--rows", "-r", type=int, default=2000, help="Number of sample records")
@@ -552,6 +631,8 @@ def main():
 
     if args.command == "audit":
         cmd_audit(args)
+    elif args.command == "verify-emails":
+        cmd_verify_emails(args)
     elif args.command == "clean":
         cmd_clean(args)
     elif args.command == "preview":

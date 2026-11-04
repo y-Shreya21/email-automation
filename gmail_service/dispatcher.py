@@ -77,7 +77,8 @@ class EmailDispatcher:
         min_jitter: int = 20,
         max_jitter: int = 45,
         max_daily_limit: int = 50,
-        verifier: Optional[Any] = None
+        verifier: Optional[Any] = None,
+        is_dry_run: bool = False
     ):
         self.service = gmail_service
         self.tracker = tracker
@@ -85,6 +86,7 @@ class EmailDispatcher:
         self.max_jitter = max_jitter
         self.max_daily_limit = max_daily_limit
         self.verifier = verifier
+        self.is_dry_run = is_dry_run or (self.service is not None and "Mock" in type(self.service).__name__)
 
     def apply_jitter(self, action_name: str = "operation"):
         """Wait randomized interval to simulate natural human activity."""
@@ -133,28 +135,30 @@ class EmailDispatcher:
             draft_id = res.get("id")
 
             # Record in persistence tracker
-            meta = contact_meta or {}
-            self.tracker.upsert_contact_status(
-                email=to_email,
-                name=meta.get("cleaned_name", ""),
-                company=meta.get("cleaned_company", ""),
-                job_title=meta.get("job_title", ""),
-                status="DRAFTED",
-                template_key=meta.get("template_key"),
-                subject=subject,
-                draft_id=draft_id
-            )
-            self.tracker.increment_daily_counter("drafts_count")
+            if not self.is_dry_run:
+                meta = contact_meta or {}
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    name=meta.get("cleaned_name", ""),
+                    company=meta.get("cleaned_company", ""),
+                    job_title=meta.get("job_title", ""),
+                    status="DRAFTED",
+                    template_key=meta.get("template_key"),
+                    subject=subject,
+                    draft_id=draft_id
+                )
+                self.tracker.increment_daily_counter("drafts_count")
             return (True, f"Draft created successfully (ID: {draft_id})", draft_id)
 
         except Exception as e:
             err_msg = str(e)
-            self.tracker.upsert_contact_status(
-                email=to_email,
-                status="FAILED",
-                error_message=err_msg
-            )
-            self.tracker.increment_daily_counter("failed_count")
+            if not self.is_dry_run:
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    status="FAILED",
+                    error_message=err_msg
+                )
+                self.tracker.increment_daily_counter("failed_count")
             return (False, f"Failed to create draft: {err_msg}", None)
 
     def delete_draft(self, draft_id: str) -> bool:
@@ -211,26 +215,28 @@ class EmailDispatcher:
             message_id = res.get("id")
 
             # Record in persistence tracker
-            meta = contact_meta or {}
-            self.tracker.upsert_contact_status(
-                email=to_email,
-                name=meta.get("cleaned_name", ""),
-                company=meta.get("cleaned_company", ""),
-                job_title=meta.get("job_title", ""),
-                status="SENT",
-                template_key=meta.get("template_key"),
-                subject=subject,
-                message_id=message_id
-            )
-            self.tracker.increment_daily_counter("sent_count")
+            if not self.is_dry_run:
+                meta = contact_meta or {}
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    name=meta.get("cleaned_name", ""),
+                    company=meta.get("cleaned_company", ""),
+                    job_title=meta.get("job_title", ""),
+                    status="SENT",
+                    template_key=meta.get("template_key"),
+                    subject=subject,
+                    message_id=message_id
+                )
+                self.tracker.increment_daily_counter("sent_count")
             return (True, f"Email sent successfully (Message ID: {message_id})", message_id)
 
         except Exception as e:
             err_msg = str(e)
-            self.tracker.upsert_contact_status(
-                email=to_email,
-                status="FAILED",
-                error_message=err_msg
-            )
-            self.tracker.increment_daily_counter("failed_count")
+            if not self.is_dry_run:
+                self.tracker.upsert_contact_status(
+                    email=to_email,
+                    status="FAILED",
+                    error_message=err_msg
+                )
+                self.tracker.increment_daily_counter("failed_count")
             return (False, f"Failed to send email: {err_msg}", None)

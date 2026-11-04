@@ -181,7 +181,8 @@ def cmd_draft(args):
         min_jitter=0 if args.dry_run else 2,
         max_jitter=0 if args.dry_run else 4,
         max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day,
-        verifier=verifier
+        verifier=verifier,
+        is_dry_run=args.dry_run
     )
 
     resume_file = DEFAULT_PROFILE.resume_path if DEFAULT_PROFILE.resume_path.exists() else None
@@ -276,10 +277,15 @@ def cmd_send(args):
         min_jitter=0 if args.dry_run else DEFAULT_SAFEGUARDS.min_jitter_seconds,
         max_jitter=0 if args.dry_run else DEFAULT_SAFEGUARDS.max_jitter_seconds,
         max_daily_limit=DEFAULT_SAFEGUARDS.max_emails_per_day,
-        verifier=verifier
+        verifier=verifier,
+        is_dry_run=args.dry_run
     )
 
     resume_file = DEFAULT_PROFILE.resume_path if DEFAULT_PROFILE.resume_path.exists() else None
+    if resume_file:
+        console.print(f"[green]✓ Attaching resume: {resume_file.name}[/green]")
+    else:
+        console.print("[yellow]Note: No resume.pdf found in project root. Emails will be sent without attachment.[/yellow]")
 
     sent_count = 0
     skipped_undeliverable = 0

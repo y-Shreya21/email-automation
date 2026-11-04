@@ -3,12 +3,23 @@ Gmail API OAuth 2.0 Authentication Manager
 """
 import os
 import json
+import socket
 from pathlib import Path
 from typing import Optional, Any
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build, Resource
+
+# Prevent macOS/ISP timeouts by prioritizing IPv4 when IPv6 routing is non-functional
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_first_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if family == 0:
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _ipv4_first_getaddrinfo
 
 class GmailAuthenticator:
     """Handles OAuth 2.0 flow, token caching, and Gmail API service creation."""

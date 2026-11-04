@@ -5,9 +5,20 @@ import sys
 import os
 import re
 import stat
+import socket
 import subprocess
 import argparse
 from pathlib import Path
+
+# Force IPv4 preference across CLI execution to avoid network timeouts on broken IPv6 routes
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_first_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if family == 0:
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _ipv4_first_getaddrinfo
 import pandas as pd
 from rich.console import Console
 from rich.table import Table

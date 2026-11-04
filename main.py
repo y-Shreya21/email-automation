@@ -586,7 +586,10 @@ def cmd_audit(args):
         tracked_files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
         
         forbidden_in_git = []
-        forbidden_patterns = ["credentials.json", "token.json", "client_secret_", ".env", "outreach_history.db"]
+        forbidden_patterns = [
+            "credentials.json", "token.json", "client_secret_", ".env",
+            "outreach_history.db", "preview_dashboard.html"
+        ]
         for f in tracked_files:
             for pat in forbidden_patterns:
                 if pat in f:
@@ -620,9 +623,16 @@ def cmd_audit(args):
     except Exception as e:
         audit_table.add_row("Git Commit History", "[yellow]SKIPPED[/yellow]", str(e))
 
-    # 3. Local Credential File Permissions
+    # 3. Local Sensitive File Permissions
     base_dir = Path(__file__).resolve().parent
-    cred_files = list(base_dir.glob("credentials.json")) + list(base_dir.glob("token.json")) + list(base_dir.glob("client_secret_*.json"))
+    cred_files = (
+        list(base_dir.glob("credentials.json")) +
+        list(base_dir.glob("token.json")) +
+        list(base_dir.glob("client_secret_*.json")) +
+        list(base_dir.glob(".env")) +
+        list(base_dir.glob("*.pdf")) +
+        list((base_dir / "data").glob("outreach_history.db"))
+    )
     perm_issues = []
     for cf in cred_files:
         mode = oct(stat.S_IMODE(cf.stat().st_mode))
@@ -634,7 +644,7 @@ def cmd_audit(args):
     if perm_issues:
         audit_table.add_row("File Permissions", "[yellow]WARN[/yellow]", f"Permissions loose: {', '.join(perm_issues)}")
     else:
-        audit_table.add_row("File Permissions", "[bold green]PASS[/bold green]", f"Hardened to 600 (owner-only access for {len(cred_files)} secret files)")
+        audit_table.add_row("File Permissions", "[bold green]PASS[/bold green]", f"Hardened to 600 (owner-only access for {len(cred_files)} sensitive files)")
 
     # 4. Pre-Commit Hook Active
     hook_path = base_dir / ".git" / "hooks" / "pre-commit"

@@ -10,10 +10,17 @@ __pycache__/
 *$py.class
 *.so
 
+# Environment secrets & local config
+.env
+.env.*
+*.env
+!.env.example
+
 # Sensitive Google Cloud & Gmail API credentials (DO NOT COMMIT)
 credentials.json
-client_secret_*.json
+client_secret*.json
 token.json
+*.token
 
 # Recruiter spreadsheets & candidate data (DO NOT COMMIT)
 *.xlsx
@@ -23,11 +30,15 @@ token.json
 data/*.xlsx
 data/*.xls
 data/*.csv
-data/outreach_history.db
+data/outreach_history.db*
 data/outreach.log
 data/suppression_list.json
 resume.pdf
 *.pdf
+
+# Generated HTML dashboards & reports (contains personalized recipient bodies)
+reports/*.html
+!reports/.gitkeep
 
 # macOS system files
 .DS_Store

@@ -26,9 +26,11 @@ FORBIDDEN_PATTERNS=(
     "Untitled spreadsheet"
     ".pem"
     ".key"
+    ".pdf"
+    "preview_dashboard.html"
 )
 
-STAGED_FILES=$(git diff --cached --name-only)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
 
 if [ -z "$STAGED_FILES" ]; then
     echo -e "${GREEN}✓ No staged files to check.${NC}"
@@ -39,6 +41,10 @@ LEAK_DETECTED=0
 
 for file in $STAGED_FILES; do
     for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+        # Whitelist .env.example template
+        if [[ "$pattern" == ".env" && "$file" == *".env.example"* ]]; then
+            continue
+        fi
         if [[ "$file" == *"$pattern"* ]]; then
             echo -e "${RED}❌ COMMIT BLOCKED: Sensitive file staged:${NC} $file"
             echo -e "${YELLOW}   Run: git reset HEAD '$file' to unstage it.${NC}"

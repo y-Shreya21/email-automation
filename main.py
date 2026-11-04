@@ -592,6 +592,8 @@ def cmd_audit(args):
         ]
         for f in tracked_files:
             for pat in forbidden_patterns:
+                if pat == ".env" and f.endswith(".env.example"):
+                    continue
                 if pat in f:
                     forbidden_in_git.append(f)
             if f.endswith((".xlsx", ".xls", ".csv")) and f != "sample_recruiter_contacts.xlsx":

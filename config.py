@@ -15,6 +15,17 @@ REPORTS_DIR = BASE_DIR / "reports"
 DATA_DIR.mkdir(exist_ok=True)
 REPORTS_DIR.mkdir(exist_ok=True)
 
+def get_default_resume_path() -> Path:
+    """Auto-detect resume PDF in workspace root."""
+    default = BASE_DIR / "resume.pdf"
+    if default.exists():
+        return default
+    pdfs = [f for f in BASE_DIR.glob("*.pdf") if not f.name.startswith(".")]
+    if pdfs:
+        return pdfs[0]
+    return default
+
+
 @dataclass
 class UserProfile:
     full_name: str = "Shreya Yadav"
@@ -42,7 +53,7 @@ class UserProfile:
     email_address: Optional[str] = "shreyayadav2027@gmail.com"
     
     # Path to resume PDF (relative or absolute)
-    resume_path: Path = BASE_DIR / "resume.pdf"
+    resume_path: Path = field(default_factory=get_default_resume_path)
 
 @dataclass
 class AntiSpamSettings:

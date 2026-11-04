@@ -229,17 +229,83 @@ class TestDeliverabilityVerifier(unittest.TestCase):
 
             self.assertFalse(success)
             self.assertIsNone(draft_id)
-            self.assertIn("Undeliverable", msg)
+            self.assertIn("DELETED from queue", msg)
+            self.assertIn("disposable/burner", msg)
 
-            # Confirm status saved in tracker as UNDELIVERABLE
+            # Confirm contact is permanently purged from tracker per two-condition security rule
             with tracker._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT status FROM outreach_log WHERE email = ?", ("test@mailinator.com",))
                 row = cursor.fetchone()
-                self.assertIsNotNone(row)
-                self.assertEqual(row["status"], "UNDELIVERABLE")
+                self.assertIsNone(row)
         finally:
             shutil.rmtree(tmp_dir)
+
+    def test_generic_and_system_inboxes(self):
+        """Test Condition 1 rejection of generic, system, and billing mailboxes."""
+        generic_emails = [
+            "payable@awign.com",
+            "billing@stripe.com",
+            "invoices@acme.org",
+            "noreply@company.com",
+            "admin@domain.com",
+            "support@helpdesk.io",
+            "accounts@finance.com"
+        ]
+        for email in generic_emails:
+            sec_res = self.verifier.security_check(email)
+            self.assertFalse(sec_res.is_available, f"{email} should fail availability check")
+            self.assertFalse(sec_res.can_draft, f"{email} should not be draftable")
+            self.assertEqual(sec_res.action, "DELETE")
+            self.assertIn("system/billing/bot", sec_res.reason)
+
+    def test_legitimate_recruiter_availability(self):
+        """Test Condition 1 accepts real recruiter and hiring manager addresses."""
+        valid_recruiter_emails = [
+            "priya.sharma@google.com",
+            "john.doe@microsoft.com",
+            "recruiter@amazon.com",
+            "talent@startup.io"
+        ]
+        for email in valid_recruiter_emails:
+            avail, _ = self.verifier.check_availability(email)
+            self.assertTrue(avail, f"{email} should be available")
+
+    def test_tracker_delete_contact(self):
+        """Test OutreachTracker.delete_contact removes contact record permanently."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp_dir) / "test_tracker.db"
+            supp_path = Path(tmp_dir) / "test_supp.json"
+            tracker = OutreachTracker(db_path, supp_path)
+
+            tracker.upsert_contact_status(
+                email="test_delete@example.com",
+                name="Delete Candidate",
+                company="Delete Corp",
+                status="APPROVED"
+            )
+            self.assertIsNotNone(tracker.get_contact("test_delete@example.com"))
+
+            # Delete contact
+            deleted = tracker.delete_contact("test_delete@example.com")
+            self.assertTrue(deleted)
+            self.assertIsNone(tracker.get_contact("test_delete@example.com"))
+
+            # Non-existent contact returns False
+            self.assertFalse(tracker.delete_contact("nonexistent@example.com"))
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_dispatcher_delete_draft(self):
+        """Test dispatcher.delete_draft properly interfaces with Gmail service."""
+        mock_service = MockGmailService()
+        tracker = OutreachTracker(Path(":memory:"), Path("/tmp/supp.json"))
+        dispatcher = EmailDispatcher(mock_service, tracker)
+
+        # Mock draft IDs return True
+        self.assertTrue(dispatcher.delete_draft("mock_draft_12345"))
+        self.assertTrue(dispatcher.delete_draft(""))
 
 
 if __name__ == "__main__":

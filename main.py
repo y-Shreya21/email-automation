@@ -203,15 +203,15 @@ def cmd_draft(args):
             if not args.dry_run and idx < len(targets):
                 dispatcher.apply_jitter("draft")
         else:
-            if "Undeliverable" in msg:
+            if "DELETED" in msg or "undeliverable" in msg.lower() or "unavailable" in msg.lower():
                 skipped_undeliverable += 1
-                console.print(f"  [bold yellow]⚠ {msg} -> Skipped, moving to next contact...[/bold yellow]")
+                console.print(f"  [bold red]🗑️ {msg}[/bold red]")
             else:
                 console.print(f"  [red]✗ {msg}[/red]")
 
     summary_msg = f"\n[bold green]Draft Creation Finished: {success_count}/{len(targets)} drafts ready in Gmail.[/bold green]"
     if skipped_undeliverable > 0:
-        summary_msg += f" [yellow]({skipped_undeliverable} skipped due to non-deliverable email domains)[/yellow]"
+        summary_msg += f" [yellow]({skipped_undeliverable} deleted from queue due to failed security check: unavailable/undeliverable)[/yellow]"
     console.print(summary_msg)
 
     # Automatically refresh the visual dashboard page
@@ -294,15 +294,15 @@ def cmd_send(args):
             if not args.dry_run and idx < len(targets):
                 dispatcher.apply_jitter("send")
         else:
-            if "Undeliverable" in msg:
+            if "DELETED" in msg or "undeliverable" in msg.lower() or "unavailable" in msg.lower():
                 skipped_undeliverable += 1
-                console.print(f"  [bold yellow]⚠ {msg} -> Skipped, moving to next contact...[/bold yellow]")
+                console.print(f"  [bold red]🗑️ {msg}[/bold red]")
             else:
                 console.print(f"  [red]✗ {msg}[/red]")
 
     summary_send = f"\n[bold green]Outreach Dispatched: {sent_count}/{len(targets)} emails sent successfully.[/bold green]"
     if skipped_undeliverable > 0:
-        summary_send += f" [yellow]({skipped_undeliverable} skipped due to non-deliverable email domains)[/yellow]"
+        summary_send += f" [yellow]({skipped_undeliverable} deleted from queue due to failed security check: unavailable/undeliverable)[/yellow]"
     console.print(summary_send)
 
     # Automatically refresh the visual dashboard page
@@ -427,6 +427,119 @@ def cmd_verify_emails(args):
     console.print(f"\n[bold green]Summary: {deliverable_count}/{len(contacts)} contacts confirmed deliverable with active MX records.[/bold green]")
     if undeliverable_count > 0:
         console.print(f"[bold yellow]⚠ {undeliverable_count} contacts are undeliverable and will be automatically skipped during draft creation.[/bold yellow]")
+def cmd_purge_invalid(args):
+    """
+    Enforce strict two-condition security verification across all contacts in outreach history:
+    1. Condition 1 (Available): Valid RFC syntax and non-generic/system mailbox (reject payable, billing, etc.)
+    2. Condition 2 (Deliverable): Valid MX records and non-disposable domain
+    If either condition fails:
+      - Purge any associated Gmail draft from Gmail API
+      - Delete contact from outreach SQLite database
+    """
+    console.print(Panel(
+        "[bold cyan]Two-Condition Security Audit & Queue Purge[/bold cyan]\n"
+        "Condition 1: Address Available & Legitimate (Non-System/Payable)\n"
+        "Condition 2: Address Deliverable (Active MX Records & Non-Disposable)\n"
+        "Action: If BOTH pass -> DRAFT. Otherwise -> DELETE.",
+        title="🛡️ Security Verifier"
+    ))
+
+    tracker = OutreachTracker(DEFAULT_STORAGE.db_path, DEFAULT_STORAGE.suppression_list_path)
+    verifier = EmailDeliverabilityVerifier()
+
+    service = None
+    if not getattr(args, "dry_run", False):
+        try:
+            authenticator = GmailAuthenticator(
+                DEFAULT_SAFEGUARDS.credentials_path,
+                DEFAULT_SAFEGUARDS.token_path,
+                DEFAULT_SAFEGUARDS.gmail_scopes
+            )
+            service = authenticator.get_service()
+        except Exception as e:
+            console.print(f"[dim]Note: Live Gmail API connection not active ({e}). Using mock service for simulation.[/dim]")
+            service = MockGmailService()
+    else:
+        console.print("[bold yellow]Running in DRY-RUN mode (No changes will be written)[/bold yellow]")
+        service = MockGmailService()
+
+    dispatcher = EmailDispatcher(
+        service, tracker,
+        min_jitter=0,
+        max_jitter=0,
+        verifier=verifier
+    )
+
+    all_contacts = tracker.get_all_contacts()
+    if not all_contacts:
+        console.print("[yellow]No contacts found in outreach database.[/yellow]")
+        return
+
+    console.print(f"Auditing [bold cyan]{len(all_contacts)}[/bold cyan] contacts in database against security conditions...\n")
+
+    deleted_count = 0
+    drafts_purged = 0
+
+    table = Table(title="Security Purge Action Log", show_header=True)
+    table.add_column("Recipient Email", style="bold red")
+    table.add_column("Company", style="cyan")
+    table.add_column("Prev Status", style="yellow")
+    table.add_column("Action Taken & Reason", style="dim")
+
+    for c in all_contacts:
+        email = c.get("email")
+        if not email:
+            continue
+
+        sec_check = verifier.security_check(email)
+        if not sec_check.can_draft:
+            deleted_count += 1
+            draft_id = c.get("gmail_draft_id")
+            draft_msg = ""
+
+            if draft_id and not getattr(args, "dry_run", False):
+                if dispatcher.delete_draft(draft_id):
+                    drafts_purged += 1
+                    draft_msg = f" | Purged Gmail Draft ({draft_id[:8]}...)"
+                else:
+                    draft_msg = f" | Failed to purge Gmail Draft ({draft_id[:8]}...)"
+            elif draft_id and getattr(args, "dry_run", False):
+                draft_msg = f" | [Simulated] Purge Gmail Draft ({draft_id[:8]}...)"
+
+            if not getattr(args, "dry_run", False):
+                tracker.delete_contact(email)
+                action_str = f"[bold red]DELETED[/bold red]: {sec_check.reason}{draft_msg}"
+            else:
+                action_str = f"[bold yellow]WOULD DELETE[/bold yellow]: {sec_check.reason}{draft_msg}"
+
+            table.add_row(
+                email,
+                c.get("company") or "N/A",
+                c.get("status") or "N/A",
+                action_str
+            )
+
+    if deleted_count > 0:
+        console.print(table)
+        action_verb = "Purged" if not getattr(args, "dry_run", False) else "Identified"
+        console.print(f"\n[bold green]✓ Security Action Complete:[/] {action_verb} {deleted_count} invalid contacts from queue.")
+        if drafts_purged > 0:
+            console.print(f"[bold green]✓ Draft Purge Complete:[/] {drafts_purged} drafts permanently removed from Gmail.")
+    else:
+        console.print("[bold green]✓ All contacts in database passed both security conditions (Available & Deliverable). None deleted.[/bold green]")
+
+    # Auto-refresh dashboard
+    if not getattr(args, "dry_run", False) and deleted_count > 0:
+        try:
+            if DEFAULT_STORAGE.cleaned_contacts_path.exists():
+                df_all = pd.read_excel(DEFAULT_STORAGE.cleaned_contacts_path)
+                contacts = df_all.to_dict(orient="records")
+                engine = TemplateEngine(DEFAULT_PROFILE)
+                previewer = PreviewApprovalSystem(engine, tracker)
+                out_dash = previewer.generate_html_dashboard(contacts, DEFAULT_STORAGE.preview_dashboard_path)
+                console.print(f"[bold cyan]✓ Visual dashboard updated:[/] file://{out_dash.resolve()}")
+        except Exception as e:
+            console.print(f"[dim]Could not auto-update dashboard: {e}[/dim]")
 
 
 def cmd_reset(args):
@@ -619,6 +732,10 @@ def main():
     p_verify.add_argument("--limit", "-l", type=int, default=20, help="Number of contacts to verify (0 = all)")
     p_verify.add_argument("--tier", "-t", type=int, choices=[1, 2, 3], help="Filter contacts by tier (1: MNC, 2: IT Services, 3: Staffing)")
 
+    # purge-invalid
+    p_purge = subparsers.add_parser("purge-invalid", help="Enforce two-condition security check: delete unavailable/undeliverable contacts and drafts")
+    p_purge.add_argument("--dry-run", action="store_true", help="Simulate deletion without modifying database or Gmail")
+
     # sample
     p_sample = subparsers.add_parser("sample", help="Generate a synthetic 2,000-contact sample spreadsheet")
     p_sample.add_argument("--rows", "-r", type=int, default=2000, help="Number of sample records")
@@ -633,6 +750,8 @@ def main():
         cmd_audit(args)
     elif args.command == "verify-emails":
         cmd_verify_emails(args)
+    elif args.command == "purge-invalid":
+        cmd_purge_invalid(args)
     elif args.command == "clean":
         cmd_clean(args)
     elif args.command == "preview":

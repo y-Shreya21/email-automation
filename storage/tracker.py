@@ -207,3 +207,29 @@ class OutreachTracker:
             "drafts_today": self.get_daily_count("drafts_count"),
             "sent_today": self.get_daily_count("sent_count")
         }
+
+    def delete_contact(self, email: str) -> bool:
+        """Permanently delete a contact from outreach_log."""
+        email_clean = email.strip().lower()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM outreach_log WHERE email = ?", (email_clean,))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            return deleted
+
+    def get_contact(self, email: str) -> Optional[Dict[str, Any]]:
+        """Fetch single contact details by email."""
+        email_clean = email.strip().lower()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM outreach_log WHERE email = ?", (email_clean,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_contacts(self) -> List[Dict[str, Any]]:
+        """Fetch all tracked contacts."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM outreach_log")
+            return [dict(r) for r in cursor.fetchall()]

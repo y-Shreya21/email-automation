@@ -1,6 +1,9 @@
 """
-Email Deliverability & MX Verification Engine
-Validates syntax, disposable domains, and queries DNS for active Mail Exchange (MX) records.
+Email Deliverability & Two-Condition Security Verification Engine
+Evaluates:
+- Condition 1: Address Availability & Validity (RFC 5322 syntax, resolving domain, non-system/payable inbox)
+- Condition 2: Address Deliverability (Active MX records, non-disposable domain)
+If both conditions pass -> DRAFT. Otherwise -> DELETE.
 """
 import re
 from dataclasses import dataclass, field
@@ -15,10 +18,31 @@ DISPOSABLE_DOMAINS = {
     "maildrop.cc", "mohmal.com", "burnermail.io", "nada.ltd"
 }
 
+# Known generic / system / bot prefixes that are NOT available recruiter inboxes
+SYSTEM_OR_GENERIC_PREFIXES = {
+    "payable", "payables", "billing", "billings", "invoice", "invoices",
+    "accounts", "accounting", "finance", "legal", "compliance", "abuse",
+    "postmaster", "noreply", "no-reply", "do-not-reply", "mailer-daemon",
+    "bounce", "admin", "webmaster", "support", "help", "info", "contact",
+    "sales", "press", "media", "privacy", "security", "customer", "care"
+}
+
 # Standard RFC 5322 compliant email regex
 EMAIL_REGEX = re.compile(
     r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$"
 )
+
+
+@dataclass
+class SecurityCheckResult:
+    email: str
+    is_available: bool      # Condition 1: syntax valid, non-system, resolving domain
+    is_deliverable: bool    # Condition 2: active MX records, non-disposable
+    can_draft: bool         # True only if BOTH conditions pass
+    action: str             # "DRAFT" or "DELETE"
+    reason: str
+    domain: str = ""
+    mx_records: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -33,8 +57,8 @@ class DeliverabilityResult:
 
 class EmailDeliverabilityVerifier:
     """
-    High-performance email deliverability verifier with in-memory domain caching,
-    syntax validation, burner domain detection, and DNS MX resolution.
+    High-performance email verifier evaluating Availability and Deliverability.
+    If either fails, the system enforces automatic deletion.
     """
 
     def __init__(self, dns_timeout: float = 3.0, allow_offline_fallback: bool = True):
@@ -79,11 +103,41 @@ class EmailDeliverabilityVerifier:
 
     def is_disposable(self, domain: str) -> bool:
         """Check if domain is a known temporary / burner email service."""
-        return domain.lower() in DISPOSABLE_DOMAINS
+        return domain.lower().strip() in DISPOSABLE_DOMAINS
+
+    def is_system_or_generic_inbox(self, email: str) -> Tuple[bool, str]:
+        """Check if address is an unmonitored, billing, or system mailbox."""
+        if not email or "@" not in email:
+            return False, ""
+        local_part = email.split("@")[0].lower().strip()
+        
+        # Check exact prefix or prefix before . or _ (e.g., payable.in, billing_dept)
+        clean_prefix = re.split(r"[._+-]", local_part)[0]
+        if local_part in SYSTEM_OR_GENERIC_PREFIXES or clean_prefix in SYSTEM_OR_GENERIC_PREFIXES:
+            return True, f"Address '{email}' is a system/billing/bot mailbox ({clean_prefix}@), not an active recruiter inbox"
+
+        return False, ""
+
+    def check_availability(self, email: str) -> Tuple[bool, str]:
+        """
+        Condition 1: Check if the address is available and legitimate.
+        - Valid RFC 5322 syntax
+        - Not an unmonitored system, billing, or bot address
+        - Has valid domain structure
+        """
+        syntax_ok, syntax_err = self.validate_syntax(email)
+        if not syntax_ok:
+            return False, f"Address unavailable: {syntax_err}"
+
+        is_system, system_msg = self.is_system_or_generic_inbox(email)
+        if is_system:
+            return False, f"Address unavailable: {system_msg}"
+
+        return True, "Address is available and properly formatted"
 
     def check_domain_mx(self, domain: str) -> Tuple[bool, str, List[str]]:
         """
-        Query DNS for Mail Exchange (MX) records.
+        Condition 2: Query DNS for Mail Exchange (MX) records.
         Cached in-memory to prevent duplicate lookups for recruiters from the same company.
         """
         domain = domain.lower().strip()
@@ -142,49 +196,75 @@ class EmailDeliverabilityVerifier:
             self._domain_cache[domain] = result
             return result
 
-    def verify(self, email: str) -> DeliverabilityResult:
+    def security_check(self, email: str) -> SecurityCheckResult:
         """
-        Complete verification pipeline:
-        1. Syntax validation
-        2. Disposable domain check
-        3. DNS MX record resolution
+        Perform strict Two-Condition Security Verification:
+        Condition 1: Address is Available & Legitimate (syntax, non-system).
+        Condition 2: Address is Deliverable (active MX, non-disposable).
+        
+        If both pass -> can_draft=True, action='DRAFT'.
+        If either fails -> can_draft=False, action='DELETE'.
         """
         if not email or not isinstance(email, str):
-            return DeliverabilityResult(
+            return SecurityCheckResult(
                 email=str(email),
+                is_available=False,
                 is_deliverable=False,
-                status="UNDELIVERABLE",
-                reason="Email is empty or non-string"
+                can_draft=False,
+                action="DELETE",
+                reason="Address is null or non-string"
             )
 
         cleaned_email = email.strip()
-        syntax_ok, syntax_err = self.validate_syntax(cleaned_email)
-        if not syntax_ok:
-            return DeliverabilityResult(
+
+        # Condition 1: Availability
+        avail_ok, avail_msg = self.check_availability(cleaned_email)
+        if not avail_ok:
+            return SecurityCheckResult(
                 email=cleaned_email,
+                is_available=False,
                 is_deliverable=False,
-                status="UNDELIVERABLE",
-                reason=syntax_err
+                can_draft=False,
+                action="DELETE",
+                reason=avail_msg
             )
 
         domain = cleaned_email.split("@")[1].lower()
 
-        mx_ok, mx_msg, mx_hosts = self.check_domain_mx(domain)
-        if not mx_ok:
-            return DeliverabilityResult(
+        # Condition 2: Deliverability
+        deliv_ok, deliv_msg, mx_hosts = self.check_domain_mx(domain)
+        if not deliv_ok:
+            return SecurityCheckResult(
                 email=cleaned_email,
+                is_available=True,
                 is_deliverable=False,
-                status="UNDELIVERABLE",
-                reason=mx_msg,
+                can_draft=False,
+                action="DELETE",
+                reason=f"Address undeliverable: {deliv_msg}",
                 domain=domain,
                 mx_records=mx_hosts
             )
 
-        return DeliverabilityResult(
+        # Both conditions verified!
+        return SecurityCheckResult(
             email=cleaned_email,
+            is_available=True,
             is_deliverable=True,
-            status="DELIVERABLE",
-            reason=mx_msg,
+            can_draft=True,
+            action="DRAFT",
+            reason=f"Available & Deliverable (MX: {', '.join(mx_hosts[:1]) if mx_hosts else 'Verified'})",
             domain=domain,
             mx_records=mx_hosts
+        )
+
+    def verify(self, email: str) -> DeliverabilityResult:
+        """Backwards-compatible deliverability checker."""
+        sec = self.security_check(email)
+        return DeliverabilityResult(
+            email=sec.email,
+            is_deliverable=sec.can_draft,
+            status="DELIVERABLE" if sec.can_draft else "UNDELIVERABLE",
+            reason=sec.reason,
+            domain=sec.domain,
+            mx_records=sec.mx_records
         )

@@ -53,9 +53,12 @@ def build_mime_message(
             att_part.set_payload(f.read())
         
         encoders.encode_base64(att_part)
+        display_name = att_path.name
+        if "\\" in display_name or "/" in display_name or display_name.lower() in ["resume.pdf", "shreya_yadav_ai\\ml.pdf"]:
+            display_name = "Shreya_Yadav_Resume.pdf"
         att_part.add_header(
             "Content-Disposition",
-            f'attachment; filename="{att_path.name}"'
+            f'attachment; filename="{display_name}"'
         )
         message.attach(att_part)
 
@@ -109,20 +112,13 @@ class EmailDispatcher:
         if self.tracker.is_already_contacted(to_email):
             return (False, f"Skipped: {to_email} already contacted/drafted", None)
 
-        # Deliverability check
+        # Two-condition security check: Available & Deliverable
         if self.verifier:
-            deliv = self.verifier.verify(to_email)
-            if not deliv.is_deliverable:
-                meta = contact_meta or {}
-                self.tracker.upsert_contact_status(
-                    email=to_email,
-                    name=meta.get("cleaned_name", ""),
-                    company=meta.get("cleaned_company", ""),
-                    job_title=meta.get("job_title", ""),
-                    status="UNDELIVERABLE",
-                    error_message=deliv.reason
-                )
-                return (False, f"Skipped (Undeliverable): {deliv.reason}", None)
+            sec_check = self.verifier.security_check(to_email)
+            if not sec_check.can_draft:
+                # Otherwise delete these: remove from active database queue
+                self.tracker.delete_contact(to_email)
+                return (False, f"DELETED from queue: {sec_check.reason}", None)
 
         try:
             mime_msg = build_mime_message(
@@ -161,6 +157,16 @@ class EmailDispatcher:
             self.tracker.increment_daily_counter("failed_count")
             return (False, f"Failed to create draft: {err_msg}", None)
 
+    def delete_draft(self, draft_id: str) -> bool:
+        """Permanently delete a draft from Gmail."""
+        if not draft_id or str(draft_id).startswith("mock_draft"):
+            return True
+        try:
+            self.service.users().drafts().delete(userId="me", id=draft_id).execute()
+            return True
+        except Exception:
+            return False
+
     def send_email(
         self,
         to_email: str,
@@ -186,20 +192,12 @@ class EmailDispatcher:
         if self.tracker.is_already_contacted(to_email):
             return (False, f"Skipped: {to_email} already contacted", None)
 
-        # Deliverability check
+        # Two-condition security check: Available & Deliverable
         if self.verifier:
-            deliv = self.verifier.verify(to_email)
-            if not deliv.is_deliverable:
-                meta = contact_meta or {}
-                self.tracker.upsert_contact_status(
-                    email=to_email,
-                    name=meta.get("cleaned_name", ""),
-                    company=meta.get("cleaned_company", ""),
-                    job_title=meta.get("job_title", ""),
-                    status="UNDELIVERABLE",
-                    error_message=deliv.reason
-                )
-                return (False, f"Skipped (Undeliverable): {deliv.reason}", None)
+            sec_check = self.verifier.security_check(to_email)
+            if not sec_check.can_draft:
+                self.tracker.delete_contact(to_email)
+                return (False, f"DELETED from queue: {sec_check.reason}", None)
 
         try:
             mime_msg = build_mime_message(

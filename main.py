@@ -221,9 +221,13 @@ def cmd_draft(args):
             else:
                 console.print(f"  [red]✗ {msg}[/red]")
 
-    summary_msg = f"\n[bold green]Draft Creation Finished: {success_count}/{len(targets)} drafts ready in Gmail.[/bold green]"
+    if args.dry_run:
+        summary_msg = f"\n[bold yellow][DRY-RUN SIMULATION] {success_count}/{len(targets)} drafts simulated. Zero drafts created in Gmail.[/bold yellow]"
+    else:
+        summary_msg = f"\n[bold green]Draft Creation Finished: {success_count}/{len(targets)} drafts ready in Gmail.[/bold green]"
     if skipped_undeliverable > 0:
-        summary_msg += f" [yellow]({skipped_undeliverable} deleted from queue due to failed security check: unavailable/undeliverable)[/yellow]"
+        del_label = "deleted from queue" if not args.dry_run else "identified for removal"
+        summary_msg += f" [yellow]({skipped_undeliverable} {del_label} due to failed security check: unavailable/undeliverable)[/yellow]"
     console.print(summary_msg)
 
     # Automatically refresh the visual dashboard page
@@ -269,7 +273,13 @@ def cmd_send(args):
             DEFAULT_SAFEGUARDS.token_path,
             DEFAULT_SAFEGUARDS.gmail_scopes
         )
-        service = authenticator.get_service()
+        try:
+            service = authenticator.get_service()
+        except FileNotFoundError as e:
+            console.print(f"[bold red]{e}[/bold red]")
+            console.print("\n[cyan]Tip: You can test sending safely right now with the --dry-run flag:[/cyan]")
+            console.print("  [bold green]python main.py send --batch-size 20 --dry-run --confirm-send[/bold green]")
+            return
 
     verifier = EmailDeliverabilityVerifier()
     dispatcher = EmailDispatcher(
@@ -317,9 +327,13 @@ def cmd_send(args):
             else:
                 console.print(f"  [red]✗ {msg}[/red]")
 
-    summary_send = f"\n[bold green]Outreach Dispatched: {sent_count}/{len(targets)} emails sent successfully.[/bold green]"
+    if args.dry_run:
+        summary_send = f"\n[bold yellow][DRY-RUN SIMULATION] {sent_count}/{len(targets)} simulated sends completed. Zero emails dispatched.[/bold yellow]"
+    else:
+        summary_send = f"\n[bold green]Outreach Dispatched: {sent_count}/{len(targets)} emails sent successfully.[/bold green]"
     if skipped_undeliverable > 0:
-        summary_send += f" [yellow]({skipped_undeliverable} deleted from queue due to failed security check: unavailable/undeliverable)[/yellow]"
+        del_label = "deleted from queue" if not args.dry_run else "identified for removal"
+        summary_send += f" [yellow]({skipped_undeliverable} {del_label} due to failed security check: unavailable/undeliverable)[/yellow]"
     console.print(summary_send)
 
     # Automatically refresh the visual dashboard page
@@ -484,7 +498,8 @@ def cmd_purge_invalid(args):
         service, tracker,
         min_jitter=0,
         max_jitter=0,
-        verifier=verifier
+        verifier=verifier,
+        is_dry_run=getattr(args, "dry_run", False)
     )
 
     all_contacts = tracker.get_all_contacts()

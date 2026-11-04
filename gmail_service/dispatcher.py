@@ -86,7 +86,7 @@ class EmailDispatcher:
         self.max_jitter = max_jitter
         self.max_daily_limit = max_daily_limit
         self.verifier = verifier
-        self.is_dry_run = is_dry_run or (self.service is not None and "Mock" in type(self.service).__name__)
+        self.is_dry_run = bool(is_dry_run)
 
     def apply_jitter(self, action_name: str = "operation"):
         """Wait randomized interval to simulate natural human activity."""
@@ -118,9 +118,10 @@ class EmailDispatcher:
         if self.verifier:
             sec_check = self.verifier.security_check(to_email)
             if not sec_check.can_draft:
-                # Otherwise delete these: remove from active database queue
-                self.tracker.delete_contact(to_email)
-                return (False, f"DELETED from queue: {sec_check.reason}", None)
+                if not self.is_dry_run:
+                    self.tracker.delete_contact(to_email)
+                action_str = "DELETED from queue" if not self.is_dry_run else "[Simulated] WOULD DELETE from queue"
+                return (False, f"{action_str}: {sec_check.reason}", None)
 
         try:
             mime_msg = build_mime_message(
@@ -165,6 +166,8 @@ class EmailDispatcher:
         """Permanently delete a draft from Gmail."""
         if not draft_id or str(draft_id).startswith("mock_draft"):
             return True
+        if self.is_dry_run:
+            return True
         try:
             self.service.users().drafts().delete(userId="me", id=draft_id).execute()
             return True
@@ -184,9 +187,9 @@ class EmailDispatcher:
         Send single personalized email directly via Gmail API.
         Returns: (success, message_or_error, message_id)
         """
-        # Daily limit check
+        # Daily limit check (enforced only during live dispatch)
         sent_today = self.tracker.get_daily_count("sent_count")
-        if sent_today >= self.max_daily_limit:
+        if not self.is_dry_run and sent_today >= self.max_daily_limit:
             return (False, f"Daily limit reached ({sent_today}/{self.max_daily_limit}). Aborting send.", None)
 
         # Suppression check
@@ -200,8 +203,10 @@ class EmailDispatcher:
         if self.verifier:
             sec_check = self.verifier.security_check(to_email)
             if not sec_check.can_draft:
-                self.tracker.delete_contact(to_email)
-                return (False, f"DELETED from queue: {sec_check.reason}", None)
+                if not self.is_dry_run:
+                    self.tracker.delete_contact(to_email)
+                action_str = "DELETED from queue" if not self.is_dry_run else "[Simulated] WOULD DELETE from queue"
+                return (False, f"{action_str}: {sec_check.reason}", None)
 
         try:
             mime_msg = build_mime_message(

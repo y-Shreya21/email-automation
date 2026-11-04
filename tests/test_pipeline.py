@@ -307,6 +307,143 @@ class TestDeliverabilityVerifier(unittest.TestCase):
         self.assertTrue(dispatcher.delete_draft("mock_draft_12345"))
         self.assertTrue(dispatcher.delete_draft(""))
 
+    def test_dry_run_isolation(self):
+        """Test that dry-run mode never mutates SQLite status, counters, or deletes records."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp_dir) / "test_tracker.db"
+            supp_path = Path(tmp_dir) / "test_supp.json"
+            tracker = OutreachTracker(db_path, supp_path)
+            mock_service = MockGmailService()
+
+            # Seed an approved contact
+            tracker.upsert_contact_status(
+                email="candidate@example.com",
+                name="Candidate",
+                company="Test Corp",
+                status="APPROVED"
+            )
+
+            dispatcher = EmailDispatcher(
+                mock_service,
+                tracker,
+                min_jitter=0,
+                max_jitter=0,
+                verifier=self.verifier,
+                is_dry_run=True
+            )
+
+            # 1. Test create_draft in dry-run
+            success, msg, draft_id = dispatcher.create_draft(
+                to_email="candidate@example.com",
+                subject="Test Subject",
+                text_body="Test Body",
+                html_body="<p>Test Body</p>"
+            )
+            self.assertTrue(success)
+            self.assertEqual(tracker.get_daily_count("drafts_count"), 0)
+            contact = tracker.get_contact("candidate@example.com")
+            self.assertEqual(contact["status"], "APPROVED")
+
+            # 2. Test send_email in dry-run
+            success, msg, msg_id = dispatcher.send_email(
+                to_email="candidate@example.com",
+                subject="Test Subject",
+                text_body="Test Body",
+                html_body="<p>Test Body</p>"
+            )
+            self.assertTrue(success)
+            self.assertEqual(tracker.get_daily_count("sent_count"), 0)
+            contact = tracker.get_contact("candidate@example.com")
+            self.assertEqual(contact["status"], "APPROVED")
+
+            # 3. Test that undeliverable contact is NOT deleted from database during dry-run
+            tracker.upsert_contact_status(
+                email="burner@mailinator.com",
+                name="Burner",
+                company="Burner Inc",
+                status="APPROVED"
+            )
+            success, msg, _ = dispatcher.create_draft(
+                to_email="burner@mailinator.com",
+                subject="Test",
+                text_body="Test",
+                html_body="<p>Test</p>"
+            )
+            self.assertFalse(success)
+            self.assertIn("WOULD DELETE", msg)
+            # Contact must still exist in SQLite because it was a dry-run
+            self.assertIsNotNone(tracker.get_contact("burner@mailinator.com"))
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_dry_run_allows_send_at_daily_limit(self):
+        """Test that daily sending limit check only blocks live sends, not dry-run simulations."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp_dir) / "test_tracker.db"
+            supp_path = Path(tmp_dir) / "test_supp.json"
+            tracker = OutreachTracker(db_path, supp_path)
+            mock_service = MockGmailService()
+
+            # Simulate hitting the 50 emails daily limit
+            with tracker._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO daily_quota_tracker (send_date, sent_count) VALUES (date('now'), 50)"
+                )
+                conn.commit()
+
+            # Live dispatcher should abort
+            live_disp = EmailDispatcher(mock_service, tracker, min_jitter=0, max_jitter=0, is_dry_run=False)
+            success, msg, _ = live_disp.send_email(
+                to_email="test@example.com",
+                subject="Sub",
+                text_body="Body",
+                html_body="<p>Body</p>"
+            )
+            self.assertFalse(success)
+            self.assertIn("Daily limit reached", msg)
+
+            # Dry-run dispatcher should simulate successfully without blocking
+            dry_disp = EmailDispatcher(mock_service, tracker, min_jitter=0, max_jitter=0, is_dry_run=True)
+            success, msg, _ = dry_disp.send_email(
+                to_email="test@example.com",
+                subject="Sub",
+                text_body="Body",
+                html_body="<p>Body</p>"
+            )
+            self.assertTrue(success)
+            self.assertIn("Email sent successfully", msg)
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_explicit_dry_run_false_with_mock(self):
+        """Test that explicitly passing is_dry_run=False with mock service mutates tracker as expected."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp_dir) / "test_tracker.db"
+            supp_path = Path(tmp_dir) / "test_supp.json"
+            tracker = OutreachTracker(db_path, supp_path)
+            mock_service = MockGmailService()
+
+            dispatcher = EmailDispatcher(mock_service, tracker, min_jitter=0, max_jitter=0, is_dry_run=False)
+            self.assertFalse(dispatcher.is_dry_run)
+
+            success, msg, draft_id = dispatcher.create_draft(
+                to_email="new_lead@example.com",
+                subject="Draft Test",
+                text_body="Body",
+                html_body="<p>Body</p>"
+            )
+            self.assertTrue(success)
+            self.assertEqual(tracker.get_daily_count("drafts_count"), 1)
+            contact = tracker.get_contact("new_lead@example.com")
+            self.assertIsNotNone(contact)
+            self.assertEqual(contact["status"], "DRAFTED")
+        finally:
+            shutil.rmtree(tmp_dir)
+
 
 if __name__ == "__main__":
     unittest.main()
